@@ -110,18 +110,19 @@ $AUTH = ["Authorization: Bearer $token"];
 
 // ===================== 2) اطلاعات ادمین جاری =====================
 list($code, $body, $err) = req('GET', "$api/api/admin", $AUTH);
-show('2) WHOAMI  →  GET /api/admin', $code, $body, $err);
+$me = show('2) WHOAMI  →  GET /api/admin', $code, $body, $err);
 
-// ===================== 3) لیست گروه‌ها =====================
+// گروه‌های مجاز و بازه‌ی انقضای مجاز را از خود whoami برمی‌داریم
+$allowedGroups = $me['role']['access']['allowed_group_ids'] ?? [];
+$firstGroupId  = $allowedGroups[0] ?? null;
+$expireMin     = $me['permission_overrides']['expire_min'] ?? 86400;     // پیش‌فرض ۱ روز
+$expireMax     = $me['permission_overrides']['expire_max'] ?? 2592000;   // پیش‌فرض ۳۰ روز
+echo ">> گروه مجاز: " . json_encode($allowedGroups) .
+     "   |  بازه انقضای مجاز: {$expireMin}..{$expireMax} ثانیه\n\n";
+
+// ===================== 3) لیست گروه‌ها (read_simple) =====================
 list($code, $body, $err) = req('GET', "$api/api/groups", $AUTH);
-$groups = show('3) GROUPS  →  GET /api/groups', $code, $body, $err);
-
-// شناسه اولین گروه را برای ساخت کاربر برمی‌داریم
-$firstGroupId = null;
-if (is_array($groups)) {
-    if (isset($groups['groups'][0]['id']))      $firstGroupId = $groups['groups'][0]['id'];
-    elseif (isset($groups[0]['id']))            $firstGroupId = $groups[0]['id'];
-}
+show('3) GROUPS  →  GET /api/groups', $code, $body, $err);
 
 // ===================== 4) لیست کاربران =====================
 list($code, $body, $err) = req('GET', "$api/api/users", $AUTH);
@@ -129,12 +130,21 @@ show('4) USERS  →  GET /api/users', $code, $body, $err);
 
 // ===================== 5) ساخت کاربر تستی =====================
 if ($CREATE_TEST_USER) {
+    if ($firstGroupId === null) {
+        line();
+        echo "هیچ گروه مجازی پیدا نشد؛ نمی‌توان کاربر ساخت.\n";
+        exit(1);
+    }
+    // انقضا باید داخل بازه‌ی مجاز باشد. وسط بازه را انتخاب می‌کنیم تا مطمئن باشیم مجاز است.
+    $duration = (int) max($expireMin, min($expireMax, 7 * 86400)); // ~۷ روز، ولی داخل بازه
+    $expireTs = time() + $duration;
+
     $payload = [
         'username'   => $TEST_USERNAME,
         'status'     => 'active',
-        'expire'     => 0,        // 0 = بدون انقضا
-        'data_limit' => 0,        // 0 = بدون محدودیت حجم
-        'group_ids'  => $firstGroupId !== null ? [$firstGroupId] : [],
+        'expire'     => $expireTs,                 // timestamp یونیکس داخل بازه مجاز
+        'data_limit' => 104857600,                 // ۱۰۰ مگابایت برای تست (از سهمیه ۱ گیگ)
+        'group_ids'  => [$firstGroupId],           // گروه مجاز (مثلا 29)
     ];
     list($code, $body, $err) = req(
         'POST',
@@ -147,10 +157,17 @@ if ($CREATE_TEST_USER) {
     $created = show("5) CREATE USER  →  POST /api/user  (username: $TEST_USERNAME)", $code, $body, $err);
 
     if ($code === 403) {
-        echo ">> 403: نقش operator اجازه ساخت کاربر ندارد. باید از فروشنده دسترسی بگیری.\n";
-    } elseif (!empty($created['subscription_url'])) {
-        echo ">> لینک ساب کانفیگ ساخته‌شده:\n";
-        echo $BASE . $created['subscription_url'] . "\n";
+        echo ">> 403: نقش operator اجازه ساخت کاربر ندارد.\n";
+    } elseif ($code === 422) {
+        echo ">> 422: یکی از مقادیر طبق قوانین پنل قبول نشد (به پیام detail بالا نگاه کن).\n";
+    } elseif (in_array($code, [200, 201], true)) {
+        echo ">> کاربر ساخته شد! id = " . ($created['id'] ?? '?') . "\n";
+        $sub = $created['subscription_url'] ?? '';
+        if ($sub !== '') {
+            echo ">> لینک ساب: " . (strpos($sub, 'http') === 0 ? $sub : $BASE . $sub) . "\n";
+        } else {
+            echo ">> لینک ساب خالی برگشت؛ با GET /api/user/{$TEST_USERNAME} می‌توانی کامل ببینی.\n";
+        }
     }
 }
 
