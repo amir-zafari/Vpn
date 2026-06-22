@@ -129,6 +129,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 }
 
+/* ---------------- گرفتن لینک یک کانفیگ (با کلیک) ---------------- */
+$linkInfo = null; // ['username'=>.., 'url'=>.., 'note'=>..]
+if (isset($_GET['link']) && $_GET['link'] !== '') {
+    try {
+        $token = $token ?? login();
+        $lu = $_GET['link'];
+        list($c, $b) = api('GET', '/api/user/' . rawurlencode($lu), $token);
+        if ($c === 200) {
+            $sub = $b['subscription_url'] ?? '';
+            if ($sub !== '') {
+                $full = (strpos($sub, 'http') === 0) ? $sub : rtrim($BASE, '/') . $sub;
+                $linkInfo = ['username' => $lu, 'url' => $full, 'note' => null];
+            } else {
+                $linkInfo = ['username' => $lu, 'url' => null,
+                    'note' => 'پنل برای این کاربر لینک ساب برنگرداند (subscription_url خالی است). احتمالا مسیر ساب در تنظیمات owner فعال نیست.'];
+            }
+        } else {
+            $linkInfo = ['username' => $lu, 'url' => null, 'note' => "خطا در گرفتن لینک (HTTP $c)."];
+        }
+    } catch (Exception $e) { $linkInfo = ['username' => $_GET['link'], 'url' => null, 'note' => $e->getMessage()]; }
+}
+
 /* ---------------- گرفتن لیست کاربران ---------------- */
 $users = []; $listErr = null;
 try {
@@ -201,6 +223,21 @@ a.logout{color:var(--muted);font-size:12px;text-decoration:none;float:left}
     <div class="flash <?=$flashType?>"><?=h($flash)?></div>
   <?php endif; ?>
 
+  <?php if ($linkInfo): ?>
+    <div class="card" style="border-color:var(--blue)">
+      <h3 style="margin-top:0">🔗 لینک ساب «<?=h($linkInfo['username'])?>»</h3>
+      <?php if ($linkInfo['url']): ?>
+        <div class="row" style="align-items:center">
+          <input id="sublink" type="text" readonly value="<?=h($linkInfo['url'])?>" style="width:100%;flex:1">
+          <button class="btn-blue" type="button" onclick="copyLink()" style="flex:0">📋 کپی</button>
+          <a class="btn-blue" href="<?=h($linkInfo['url'])?>" target="_blank" style="flex:0;text-decoration:none;padding:11px">باز کردن</a>
+        </div>
+      <?php else: ?>
+        <div class="flash err" style="margin:0"><?=h($linkInfo['note'])?></div>
+      <?php endif; ?>
+    </div>
+  <?php endif; ?>
+
   <!-- فرم ساخت کانفیگ -->
   <div class="card">
     <h3 style="margin-top:0">ساخت کانفیگ جدید (یک‌ماهه)</h3>
@@ -258,6 +295,7 @@ a.logout{color:var(--muted);font-size:12px;text-decoration:none;float:left}
           <td class="muted"><?=h($u['expire'] ?? '-')?></td>
           <td>
             <div class="actions">
+              <a class="btn-blue" href="?link=<?=urlencode($uname)?>" style="text-decoration:none;padding:7px 10px;font-size:12px">🔗 لینک</a>
               <form method="post" onsubmit="return confirm('مصرف <?=h($uname)?> صفر شود؟')">
                 <input type="hidden" name="action" value="reset">
                 <input type="hidden" name="username" value="<?=h($uname)?>">
@@ -276,5 +314,13 @@ a.logout{color:var(--muted);font-size:12px;text-decoration:none;float:left}
     <?php endif; ?>
   </div>
 </div>
+<script>
+function copyLink(){
+  var el=document.getElementById('sublink');
+  el.select(); el.setSelectionRange(0,99999);
+  navigator.clipboard.writeText(el.value).then(function(){alert('لینک کپی شد ✓');})
+    .catch(function(){document.execCommand('copy');alert('لینک کپی شد ✓');});
+}
+</script>
 </body>
 </html>
