@@ -76,6 +76,14 @@ function api($method, $path, $token, $payload = null) {
 
 function gb($bytes) { global $GB; return number_format($bytes / $GB, 2); }
 
+/** روزهای باقی‌مانده تا انقضا. خروجی: عدد روز یا null (نامحدود) */
+function days_left($expire) {
+    if (empty($expire)) return null;
+    $ts = is_numeric($expire) ? (int)$expire : strtotime($expire);
+    if (!$ts) return null;
+    return (int) ceil(($ts - time()) / 86400);
+}
+
 /* ---------------- پردازش اکشن‌ها ---------------- */
 $flash = null; $flashType = 'ok';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -123,6 +131,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             list($c, $b) = api('POST', '/api/user/' . rawurlencode($u) . '/reset', $token);
             if (in_array($c, [200, 201], true)) $flash = "مصرف «$u» صفر شد.";
             else throw new Exception("ریست ناموفق (HTTP $c).");
+        }
+        elseif ($action === 'revoke') {
+            $u = $_POST['username'] ?? '';
+            list($c, $b) = api('POST', '/api/user/' . rawurlencode($u) . '/revoke_sub', $token);
+            if (in_array($c, [200, 201], true)) $flash = "لینک ساب «$u» عوض شد (لینک قبلی دیگر کار نمی‌کند).";
+            else throw new Exception("تغییر لینک ناموفق (HTTP $c).");
+        }
+        elseif ($action === 'toggle' || $action === 'extend') {
+            $u = $_POST['username'] ?? '';
+            // کاربر فعلی را می‌خوانیم تا group_ids حفظ شود (پنل گروه را اجباری می‌خواهد)
+            list($gc, $cur) = api('GET', '/api/user/' . rawurlencode($u), $token);
+            if ($gc !== 200) throw new Exception("کاربر پیدا نشد (HTTP $gc).");
+            $gids = $cur['group_ids'] ?? [];
+            if (!$gids) throw new Exception('گروه کاربر نامشخص است.');
+            $payload = ['group_ids' => $gids];
+
+            if ($action === 'toggle') {
+                $to = ($cur['status'] ?? '') === 'active' ? 'disabled' : 'active';
+                $payload['status'] = $to;
+                $msg = $to === 'disabled' ? "«$u» متوقف شد." : "«$u» دوباره فعال شد.";
+            } else { // extend = تمدید یک‌ماهه از همین حالا
+                list($wc, $me) = api('GET', '/api/admin', $token);
+                $emax = $me['permission_overrides']['expire_max'] ?? 2592000;
+                $emin = $me['permission_overrides']['expire_min'] ?? 86400;
+                $dur  = (int) max($emin, min($emax, $EXPIRE_DAYS * 86400));
+                $payload['expire'] = time() + $dur;
+                $payload['status'] = 'active';
+                $msg = "«$u» برای {$EXPIRE_DAYS} روز دیگر تمدید شد.";
+            }
+            list($c, $b) = api('PUT', '/api/user/' . rawurlencode($u), $token, $payload);
+            if (in_array($c, [200, 201], true)) $flash = $msg;
+            else throw new Exception("عملیات ناموفق (HTTP $c): " . json_encode($b, JSON_UNESCAPED_UNICODE));
         }
     } catch (Exception $e) {
         $flash = $e->getMessage(); $flashType = 'err';
@@ -200,6 +240,7 @@ button{cursor:pointer;border:none}
 .btn-blue{background:var(--blue);color:#fff}
 .btn-red{background:var(--red);color:#fff}
 .btn-amber{background:var(--amber);color:#111}
+.btn-green{background:var(--green);color:#06281a}
 .flash{padding:12px 14px;border-radius:10px;margin-bottom:16px}
 .flash.ok{background:#064e3b;color:#a7f3d0}
 .flash.err{background:#7f1d1d;color:#fecaca}
@@ -208,8 +249,9 @@ th,td{padding:10px;border-bottom:1px solid var(--line);text-align:right;font-siz
 th{color:var(--muted);font-weight:normal}
 .bar{height:8px;background:#0b1220;border-radius:6px;overflow:hidden;margin-top:4px}
 .bar>span{display:block;height:100%;background:var(--green)}
-.actions{display:flex;gap:6px}
-.actions button{padding:7px 10px;font-size:12px}
+.actions{display:flex;gap:6px;flex-wrap:wrap}
+.actions button,.actions a{padding:7px 10px;font-size:12px;text-decoration:none;white-space:nowrap;border-radius:8px}
+.actions form{margin:0}
 .muted{color:var(--muted);font-size:12px}
 a.logout{color:var(--muted);font-size:12px;text-decoration:none;float:left}
 </style>
@@ -273,16 +315,23 @@ a.logout{color:var(--muted);font-size:12px;text-decoration:none;float:left}
       <div class="muted">هیچ کانفیگی نیست.</div>
     <?php else: ?>
       <table>
-        <tr><th>نام</th><th>وضعیت</th><th>حجم (مصرف/کل)</th><th>باقی‌مانده</th><th>انقضا</th><th>عملیات</th></tr>
+        <tr><th>نام</th><th>وضعیت</th><th>مصرف / کل</th><th>باقی‌مانده</th><th>روز مانده</th><th>عملیات</th></tr>
         <?php foreach ($users as $u):
             $limit = $u['data_limit'] ?? 0; $used = $u['used_traffic'] ?? 0;
             $remain = $limit > 0 ? max(0, $limit - $used) : 0;
             $pct = $limit > 0 ? min(100, round($used / $limit * 100)) : 0;
             $uname = $u['username'] ?? '';
+            $st = $u['status'] ?? '';
+            $dleft = days_left($u['expire'] ?? null);
+            $isActive = ($st === 'active');
         ?>
         <tr>
           <td><?=h($uname)?></td>
-          <td><?=h($u['status'] ?? '')?></td>
+          <td>
+            <?php if ($isActive): ?><span style="color:var(--green)">● فعال</span>
+            <?php elseif ($st === 'disabled'): ?><span style="color:var(--red)">■ متوقف</span>
+            <?php else: ?><span class="muted"><?=h($st)?></span><?php endif; ?>
+          </td>
           <td>
             <?php if ($limit > 0): ?>
               <?=gb($used)?> / <?=gb($limit)?> GB
@@ -292,19 +341,38 @@ a.logout{color:var(--muted);font-size:12px;text-decoration:none;float:left}
             <?php endif; ?>
           </td>
           <td><?= $limit > 0 ? gb($remain).' GB' : '∞' ?></td>
-          <td class="muted"><?=h($u['expire'] ?? '-')?></td>
+          <td>
+            <?php if ($dleft === null): ?><span class="muted">∞</span>
+            <?php elseif ($dleft <= 0): ?><span style="color:var(--red)">منقضی</span>
+            <?php else: ?><b><?=$dleft?></b> روز<?php endif; ?>
+          </td>
           <td>
             <div class="actions">
-              <a class="btn-blue" href="?link=<?=urlencode($uname)?>" style="text-decoration:none;padding:7px 10px;font-size:12px">🔗 لینک</a>
+              <a class="btn-blue" href="?link=<?=urlencode($uname)?>" style="text-decoration:none">🔗 لینک</a>
+              <form method="post" onsubmit="return confirm('لینک ساب <?=h($uname)?> عوض شود؟ (لینک قبلی از کار می‌افتد)')">
+                <input type="hidden" name="action" value="revoke">
+                <input type="hidden" name="username" value="<?=h($uname)?>">
+                <button class="btn-blue" type="submit">🔄 تغییر لینک</button>
+              </form>
+              <form method="post">
+                <input type="hidden" name="action" value="toggle">
+                <input type="hidden" name="username" value="<?=h($uname)?>">
+                <button class="<?= $isActive ? 'btn-amber' : 'btn-green' ?>" type="submit"><?= $isActive ? '⏸ توقف' : '▶ فعال' ?></button>
+              </form>
+              <form method="post" onsubmit="return confirm('<?=h($uname)?> یک‌ماه دیگر تمدید شود؟')">
+                <input type="hidden" name="action" value="extend">
+                <input type="hidden" name="username" value="<?=h($uname)?>">
+                <button class="btn-green" type="submit">🔁 تمدید</button>
+              </form>
               <form method="post" onsubmit="return confirm('مصرف <?=h($uname)?> صفر شود؟')">
                 <input type="hidden" name="action" value="reset">
                 <input type="hidden" name="username" value="<?=h($uname)?>">
-                <button class="btn-amber" type="submit">ریست</button>
+                <button class="btn-amber" type="submit">♻ ریست</button>
               </form>
               <form method="post" onsubmit="return confirm('<?=h($uname)?> حذف شود؟')">
                 <input type="hidden" name="action" value="delete">
                 <input type="hidden" name="username" value="<?=h($uname)?>">
-                <button class="btn-red" type="submit">حذف</button>
+                <button class="btn-red" type="submit">🗑 حذف</button>
               </form>
             </div>
           </td>
